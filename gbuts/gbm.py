@@ -17,12 +17,8 @@ dlist = nlist + blist
 # common locations of data files
 fermidir = "./data/"
 datalocations = """
-/Volumes/External/data/gbm/daily/
-/data/gbm/daily/
-/home/lindy/public_html/gbm/data/daily/
 ./data/
-/Users/llblackb/data/gbm/daily/
-/Users/lindy/data/gbm/daily/
+/data/gbm/daily/
 """.strip().split()
 for testdir in datalocations:
     if os.path.isdir(testdir):
@@ -34,7 +30,7 @@ for testdir in datalocations:
 respdir = "./response/"
 resplocations = """
 ./response/
-/home/lindy/public_html/gbm/response/
+/data/gbm/response/
 """.strip().split()
 for testdir in resplocations:
     if os.path.isdir(testdir):
@@ -59,13 +55,6 @@ def mcrespidxwithin(pt, dtheta):
     tablexyz = pt2xyz(respgrid())
     costh = np.dot(testxyz, tablexyz)
     return(np.nonzero(np.sum(testxyz[:,np.newaxis] * tablexyz, axis=0) > np.cos(dtheta * np.pi/180.))[0])
-
-# common locations of sample files for testing
-samplefiles = dict()
-samplefiles['nai'] = fermidir + '2009/05/10/current/glg_ctime_n6_090510_v00.pha'
-samplefiles['bgo'] = fermidir + '2009/05/10/current/glg_ctime_b0_090510_v00.pha'
-samplefiles['poshist'] = fermidir + '2009/05/10/current/glg_poshist_all_090510_v00.fit'
-samplefiles['resp'] = '/Users/llblackb/gbm/response/locrates/locrates_1deg_50_300_normal_n.dat'
 
 # GBM detector array geometry in spherical coords
 naitable = """
@@ -433,11 +422,11 @@ def gbmfit(data, t, duration, dlist=dlist, channels=[0,1,2,3,4,5,6,7], poiss=Fal
             # using numpy 1.7 polyfit, weights according to poisson error (1+sqrt(N)) accounting for duration since fit it on rate(t)
             # (par, cov) = fit.polyfit(tfit[ifit], cfit[ifit]/dfit[ifit], degree, cov=True, w=dfit[ifit]/(1.+np.sqrt(cfit[ifit])))
             # we DO NOT do the weights estimates above because it FAILS for low-N outliers (bad approximation)
-            (par, cov) = fit.polyfit(tfit[ifit], cfit[ifit]/dfit[ifit], degree, cov=True)
-            if poiss: # poisson max-likelihood refinement to polyfit par
-                import scipy.optimize
-                par = scipy.optimize.fmin(fit.negloglikelihood, par, args=(np.polyval, tcent[bgidx], counts[bgidx,j], tdur[bgidx]), disp=False)
-                cov = 0 # fmin is not going to give us parameter error estimates, so give up for now
+            (par, cov) = np.polyfit(tfit[ifit], cfit[ifit]/dfit[ifit], degree, cov=True)
+            # if poiss: # poisson max-likelihood refinement to polyfit par
+            #     import scipy.optimize
+            #     par = scipy.optimize.fmin(fit.negloglikelihood, par, args=(np.polyval, tcent[bgidx], counts[bgidx,j], tdur[bgidx]), disp=False)
+            #     cov = 0 # fmin is not going to give us parameter error estimates, so give up for now
             bgfit = dfit[ifit] * np.polyval(par, tfit[ifit])
             chisq = (cfit[ifit]-bgfit)**2/bgfit
             chisqdof = np.sum(chisq)/len(ifit)
@@ -448,10 +437,10 @@ def gbmfit(data, t, duration, dlist=dlist, channels=[0,1,2,3,4,5,6,7], poiss=Fal
                 jfit = ifit[np.abs(tfit[ifit]) <= (fitsize/2.)*max(0.512, duration)]
                 if len(jfit) > degree+1: # require smaller interval to have degree+2 points
                     ifit = jfit
-                    (par, cov) = fit.polyfit(tfit[ifit], cfit[ifit]/dfit[ifit], degree, cov=True)
-                    if poiss:
-                        par = scipy.optimize.fmin(fit.negloglikelihood, par, args=(np.polyval, tcent[bgidx], counts[bgidx,j], tdur[bgidx]), disp=False)
-                        cov = 0
+                    (par, cov) = np.polyfit(tfit[ifit], cfit[ifit]/dfit[ifit], degree, cov=True)
+                    # if poiss:
+                    #     par = scipy.optimize.fmin(fit.negloglikelihood, par, args=(np.polyval, tcent[bgidx], counts[bgidx,j], tdur[bgidx]), disp=False)
+                    #     cov = 0
                     bgfit = dfit[ifit] * np.polyval(par, tfit[ifit])
                     chisq = (cfit[ifit]-bgfit)**2/bgfit
                     chisqdof = np.sum(chisq)/len(ifit)
@@ -703,44 +692,6 @@ def sunposition(t0, j2000ref=utc2fermi(j2000ref), verbose=False):
     else:
         return (ra, np.pi/2 - dec) # return (phi, theta) in spherical coords
 
-# python implementation of Valerie Connaughton's get_geometry IDL routines
-def get_geometry(utc=None, met=None, ra=None, dec=None, phi=None, theta=None):
-    import scipy.special
-    import scipy.interpolate
-    if(met != None):
-        utc = fermi2utc(met)
-    elif(utc != None):
-        met = utc2fermi(utc)
-    else:
-        print "please specify met or utc time:"
-        print " > get_geometry(utc=None, met=None, ra=None, dec=None, phi=None, theta=None)"
-        return None
-    data = loadposhist(utc)['poshist'][1].data
-    scmet = data['SCLK_UTC']
-    scquat = np.zeros((4, len(scmet)))
-    scquat[0,:] = data['QSJ_4']
-    scquat[1,:] = data['QSJ_1']
-    scquat[2,:] = data['QSJ_2']
-    scquat[3,:] = data['QSJ_3']
-    q = scipy.interpolate.interp1d(scmet, scquat)(met)
-    sc2celestial = quat2rotationmatrix(q)
-    celestial2sc = sc2celelstial.T
-    if(ra != None and dec != None):
-        celestialxyz = pt2xyz((ra*np.pi/180., np.pi/2 - dec*np.pi/180.))
-        scxyz = np.dot(celestial2sc, celestialxyz)
-        (phi, theta) = xyz2pt(scxyz) * 180./np.pi
-    elif(phi != None and theta != None):
-        scxyz = pt2xyz((phi*np.pi/180., theta*np.pi/180.))
-        celestialxyz = np.dot(sc2celestial, scxyz)
-        (ra, dec) = xyz2pt(celestialxyz) * 180./np.pi
-    else:
-        print "please specify (phi, theta) or (ra, dec)"
-        return None
-    print "UTC: " + utc.strftime(fmtlist[2])
-    print "MET: %.3f" % met
-    print "(phi, theta): (%.2f, %.2f)" % (phi, theta)
-    print "(ra, dec): (%.2f, %.2f)" % (ra, dec)
-
 # keep loudest unique events in array
 # events = np.array([[tcent, duration, ..., likelihood], ...])
 # overlapfactor: delete weaker event if stronger event explains overlapfactor of the SNR
@@ -867,6 +818,8 @@ def occultationtimes(start, stop, slist=['Sun'] + strongsources, data=None):
         occtimes[x] = zptime
     return occtimes
 
+# shows the angle of strong sources with respect to direction of Earth center as a function of time
+# used to check for occultation steps in background
 def sourceangles(data, met, dur=1.024, slist=['Sun'] + strongsources, showbg=False):
     import plots
     plots.importmpl()
