@@ -1,0 +1,382 @@
+import os
+import gc
+import sys
+import time
+import optparse
+import numpy as np
+
+from nasaem import event,clock,gbm,ligo
+from nasaem.geometry import pt2xyz, xyz2pt, normalizept
+
+__version__ = "$Id$"
+__author__ = "Lindy Blackburn"
+__email__ = "lindy.blackburn@ligo.org"
+
+# parse command line arguments
+parser = optparse.OptionParser()
+parser.add_option('-s', '--start-time', dest='starttime', type='string', \
+  help='start time of scan [UTC, GPS, or Fermi MET]')
+parser.add_option('-e', '--end-time', dest='endtime', type='string', \
+  help='end time of scan, non-inclusive [UTC, GPS, or Fermi MET], or duration of scan [s] if < 1e6')
+parser.add_option('-n', '--minimum-duration', default=0.256, dest='mindur', type='float', \
+  help='minimum foreground window duration [s]')
+parser.add_option('-x', '--maximum-duration', default=1.024, dest='maxdur', type='float', \
+  help='maximum foreground window duration, inclusive [s]')
+parser.add_option('-p', '--minimum-step', default=0, dest='minstep', type='float', \
+  help='minimum step size to use during scan [s]')
+parser.add_option('-i', '--injection', default=None, dest='injection', type='string', \
+  help='injection line: "utc/gps/met dur phi theta spec amplitude"')
+parser.add_option('-m', '--ligo-skymap', default=None, dest='skymap', type='string', \
+  help='LALInference posterior_samples OR\nHEALPix FITS skymap OR\n"gauss2d: phi theta radius" in spherical radians')
+parser.add_option('-d', '--output-dir', default=None, dest='odir', type='string', \
+  help='save npy result table in output dir')
+parser.add_option('-r', '--output-prefix', default='events', dest='prefix', type='string', \
+  help='use prefix to name output files')
+(opt, args) = parser.parse_args()
+
+# parse start and end times
+try:
+    startmet = clock.utc2fermi(clock.parsetime(opt.starttime))
+except:
+    t = float(opt.starttime)
+    startmet = t if t < 7e8 else clock.gps2fermi(t)
+
+try:
+    endmet = clock.utc2fermi(clock.parsetime(opt.endtime))
+except:
+    t = float(opt.endtime)
+    endmet = startmet + t if t < 1e6 else t if t < 7e8 else clock.gps2fermi(t)
+
+# phi, theta in radians (spherical coords) for model spectra table
+(phi, theta) = gbm.respgrid()
+nsky = len(phi)
+
+# load skymap if given
+if opt.skymap != None:
+    import healpy
+    if ".fits" in opt.skymap:
+        skymap = healpy.read_map(opt.skymap)
+    elif "gauss2d: " in opt.skymap:
+        tok = opt.skymap.strip().split()
+        (p, t, sig) = map(float, tok[1:])
+        skymap = ligo.skypatch(p, t, sig, skyres=3.) # this will be normalized
+    else: # assume posterior samples filename
+        skymap = ligo.skyhist(opt.skymap, skyres=3.) # this will not be normalizered
+    npix = len(skymap)
+    nside = healpy.npix2nside(npix)
+    skymap = skymap * len(skymap) / nsky / np.sum(skymap) # now it's normalized for nsky resolution
+    (t, p) = healpy.pix2ang(nside, np.argmax(skymap))
+    a50 = ligo.confidencearea(skymap, .5)
+    a90 = ligo.confidencearea(skymap, .9)
+    print "loaded skymap at (phi, th) = %.1f, %.1f deg  [%.3f, %.3f rad] area %.0f (50%%) %.0f (90%%) [sqdeg]" % (p * 180./np.pi, t * 180./np.pi, p, t, a50, a90)
+else:
+    skymap = None
+
+# reference 1-sigma sensitivities for the 3 model spectra, normalized to phot/cm^2 [50-300 keV, 1s]
+# sigref = np.array([0.4, 0.8, 0.4])[:,np.newaxis] * np.ones_like(phi)[np.newaxis,:]
+sigref2 = [0.4, 0.8, 0.4]
+
+# load direct response table pickle files (3, 41168, 8, 12) : spectra, locations, channels, detectors
+spectra = ["hard", "normal", "soft"]
+nspec = len(spectra)
+directnai = np.load(gbm.respdir + 'direct/directnai.npy')
+directbgo = np.load(gbm.respdir + 'direct/directbgo.npy')
+
+# durations to serach in powers of two
+log2maxdur = np.round(np.log2(opt.maxdur))
+log2mindur = np.round(np.log2(opt.mindur))
+durations = 1.024 * 2.**np.arange(log2mindur, log2maxdur+1, 1)
+maxdur = max(0.512, durations[-1])
+
+# build up list of source windows to search [tcent, duration], avoid steps shorter than minstep
+sourcewindows = sorted(((t, dur) for dur in durations for t in np.arange(startmet, endmet, max(opt.minstep, dur/4.))))
+
+# daily data and events holder
+data = gbm.precachedata(startmet-10*maxdur-6, endmet+10*maxdur+6, fork=True)
+if data is None:
+	print "no GBM data"
+	sys.exit()
+events = []
+poshist = data['poshist']['GLAST POS HIST'].data
+gtiseg = data['b0']['GTI'].data
+
+# get occultation times for strong sources and sun
+occtimes = gbm.occultationtimes(startmet-10*maxdur-5, endmet+10*maxdur+5, data=data)
+print "\n".join('occultations for %s: %s' % (k, " ".join(('%.0f' % t for t in v))) for (k, v) in occtimes.items() if len(v) > 0)
+occtimes = sum(map(list, occtimes.values()), [])
+
+# pad GTI segs by 10 seconds
+for seg in gtiseg:
+    (seg[0], seg[1]) = (seg[0] + 10, seg[1] - 10)
+
+gtiseg = event.fixsegments(gtiseg)
+
+# create injrate dictionary if needed, and injection argument for gbmfit
+if opt.injection is not None:
+    injpars = opt.injection.split()
+    try:
+        injtime = clock.utc2fermi(clock.parsetime(injpars[0]))
+    except:
+        t = float(injpars[0])
+        injtime = t if t < 7e8 else clock.gps2fermi(t)
+    injdur = float(injpars[1])
+    injphi = float(injpars[2])
+    injtheta = float(injpars[3])
+    injspec = injpars[4]
+    injamplitude = float(injpars[5]) # in phot/cm^2/s [50-300 keV]
+
+    # earth position relative to spacecraft
+    earthxyz = gbm.earthposition(poshist, injtime)
+    earthpt = xyz2pt(earthxyz)
+
+    # dictionary for injection rates vector for each detector
+    injrate = dict()
+
+    # calculate rocking angle, also round to nearest 5 degrees for response file
+    earthpt5 = tuple(np.fmod(np.round(earthpt * 180/np.pi / 5.) * 5, 360))
+    if earthpt5[1] == 140 or earthpt5[1] == 150: # extra slob
+        earthpt5 = (earthpt5[0], 145)
+    if earthpt5[1] == 125 or earthpt5[1] == 135:
+        earthpt5 = (earthpt5[0], 130)
+    inrock = (earthpt5[1] == 145 or earthpt5[1] == 130)
+
+    # load and combine atmospheric response table based on relative earth position if not previously loaded
+    # new combined response files will be generated once the earth moves relative to SC by 5 degrees
+    if not vars().has_key('lastearthpt5') or earthpt5 != lastearthpt5:
+        if inrock:
+            atmonai = np.load(gbm.respdir + 'atmo/atmrates_50_300_az%d_zen%d.npy' % earthpt5)
+        else:
+            atmonai = np.zeros((nspec, nsky, 1, 12)) # all zero if we don't have this rocking angle calculated
+        lastearthpt5 = earthpt5
+        # direct + atmospheric for NaI and combined NaI+BGO flattened response, merge 50-300 keV range
+        combinednai = np.zeros((nspec, nsky, 7, 12))
+        combinednai[:,:,:4,:] += directnai[:,:,:4,:]
+        combinednai[:,:,3:,:] += directnai[:,:,4:,:]
+        combinednai[:,:,3,:] += atmonai[:,:,0,:]
+        # flatten out response matrices because NaI and BGO detectors now have different numbers of channels and detectors
+        combinedresp = np.concatenate((combinednai.reshape((nspec, nsky, -1)), directbgo.reshape((nspec, nsky, -1))), axis=2)
+
+    # SC rotation matrices
+    (sc2celestial, celestial2sc) = gbm.sctransformations(poshist, injtime)
+    injscxyz = np.dot(celestial2sc, pt2xyz(injphi, injtheta))
+    injscpt = xyz2pt(injscxyz)
+    skyidx = gbm.mcrespidx(injscpt)
+    specidx = spectra.index(injspec)
+
+    # earth shadow
+    occlimit = np.cos(67 * np.pi/180.) # 68 degrees occlusion limit on average
+    if(np.dot(injscxyz, earthxyz) > occlimit): # True if occulted
+        print "shadowed by earth costh = %.3f, setting zero amplitude" % np.dot(injscxyz, earthxyz)
+        injamplitude = 0.0
+
+    for (i, d) in enumerate(gbm.nlist):
+        injrate[d] = injamplitude * directnai[specidx, skyidx, :, i]
+        # fake atmo by splitting it evenly between chan 3 and 4 (assume they are getting merged later)
+        injrate[d][3] += injamplitude * atmonai[specidx, skyidx, 0, i] / 2.
+        injrate[d][4] += injamplitude * atmonai[specidx, skyidx, 0, i] / 2.
+    for (i, d) in enumerate(gbm.blist):
+        injrate[d] = injamplitude * directbgo[specidx, skyidx, :, i]
+    print "injection at time %f duration %f at %.3f, %.3f (cel) %.3f %.3f (sc) amplitude %.1f spec %s" % (injtime, injdur, injphi, injtheta, injscpt[0], injscpt[1], injamplitude, injspec)
+    # from pprint import pprint
+    # pprint(injrate)
+    injarg = (injtime, injdur, injrate) # the appropriate tuple for gbmfit routine
+else:
+    injarg = None # no injection for gbmfit routine
+
+    (atmonai, combinednai) = (None, None) # move this memory save here since we need atmo resp
+
+# loop over all foreground intervals sorted by time
+print "scanning %d foreground intervals between %.3f and %.3f" % (len(sourcewindows), startmet, endmet)
+clockstart = time.time()
+for (met, dur) in sourcewindows:
+    sys.stdout.write('.'); sys.stdout.flush()
+
+    # UTC time corresponding to current central time
+    utc = clock.fermi2utc(met)
+    
+    # earth position relative to spacecraft
+    earthxyz = gbm.earthposition(poshist, met)
+    earthpt = xyz2pt(earthxyz)
+
+    # check fermi livetime to set ingti flag
+    analysiswindow = [met-10*dur, met+10*dur]
+    analysisgti = event.andtwosegmentlists([analysiswindow], gtiseg)
+    ingti = (event.livetime(analysiswindow) - event.livetime(analysisgti) < 1e-3) # numerical error
+
+    # calculate rocking angle, also round to nearest 5 degrees for response file
+    earthpt5 = tuple(np.fmod(np.round(earthpt * 180/np.pi / 5.) * 5, 360))
+    if earthpt5[1] == 140 or earthpt5[1] == 150: # extra slob
+        earthpt5 = (earthpt5[0], 145)
+    if earthpt5[1] == 125 or earthpt5[1] == 135:
+        earthpt5 = (earthpt5[0], 130)
+    inrock = (earthpt5[1] == 145 or earthpt5[1] == 130)
+
+    # load and combine atmospheric response table based on relative earth position if not previously loaded
+    # new combined response files will be generated once the earth moves relative to SC by 5 degrees
+    if not vars().has_key('lastearthpt5') or earthpt5 != lastearthpt5:
+        if inrock:
+            atmonai = np.load(gbm.respdir + 'atmo/atmrates_50_300_az%d_zen%d.npy' % earthpt5)
+        else:
+            atmonai = np.zeros((nspec, nsky, 1, 12)) # all zero if we don't have this rocking angle calculated
+        lastearthpt5 = earthpt5
+        # direct + atmospheric for NaI and combined NaI+BGO flattened response, merge 50-300 keV range
+        combinednai = np.zeros((nspec, nsky, 7, 12))
+        combinednai[:,:,:4,:] += directnai[:,:,:4,:]
+        combinednai[:,:,3:,:] += directnai[:,:,4:,:]
+        combinednai[:,:,3,:] += atmonai[:,:,0,:]
+        # flatten out response matrices because NaI and BGO detectors now have different numbers of channels and detectors
+        combinedresp = np.concatenate((combinednai.reshape((nspec, nsky, -1)), directbgo.reshape((nspec, nsky, -1))), axis=2)
+        (atmonai, combinednai) = (None, None) # save a little memory :(
+        
+    # calculate occultation filter if necessary, assume combined 3+4 channel
+    occfilter = np.ones((7, len(gbm.nlist)))
+    if len([t for t in occtimes if ((t > met-10*dur-5) and (t < met+10*dur+5))]) > 0:
+        occfilter[:3,:] = 0
+
+    # background fitting and on-source counts measurements for NaI and BGO detectors
+    # here we are not going to use the vsys estimate because it is undeveloped
+    # opt.injection is "met dur phi theta spec amplitude" string, need to match spec with likelihood
+    # injection parameter sent to gbmfit is: (injt, injdur, injrate) = injection in MET time, rate in cts/s
+    # we have the responses directnai, directbgo, atmonai  (spec, sky, chan, det)
+    (nfg, nbg, ngoodfit, nvfit, nvsys, nx2) = gbm.gbmfit(data, met, dur, poiss=False, fitqual=True, dlist=gbm.nlist, injection=injarg)
+    (bfg, bbg, bgoodfit, bvfit, bvsys, bx2) = gbm.gbmfit(data, met, dur, poiss=False, fitqual=True, dlist=gbm.blist, injection=injarg)
+
+    if nfg == None or nbg == None: # this can occur if fg interval is too short, or no data for some reason
+        events.append([met, dur, ingti, inrock, False, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        continue
+
+    # combine 50-300 keV channels 3+4 for NaI data so that atmospheric resp can be used
+    subidx = [0, 1, 2, 3, 5, 6, 7]
+    nfg[3,:] += nfg[4,:]
+    nbg[3,:] += nbg[4,:]
+    nvfit[3,:] += nvfit[4,:]
+    nfg = nfg[subidx,:]
+    nbg = nbg[subidx,:]
+    nvfit = nvfit[subidx,:]
+    ngoodfit[3,:] *= ngoodfit[4,:]
+
+    # create fitmask to filter out channels/detectors with poor background fits
+    ngoodfit = ngoodfit[subidx,:]
+    ngoodfit *= occfilter # occultation filter to remove first 3 channels if occultation overlaps
+    fitmask = np.hstack((ngoodfit.ravel(), bgoodfit.ravel()))
+
+    # get statistics for cosmic-ray post-veto, nfg.shape = (8, 12) for 8 channels, 12 detectors
+    nsnr = ngoodfit * (nfg-nbg)/np.sqrt(nbg + nvfit)
+    (i, j) = np.argsort(nsnr[0,:])[-2:] # top 2 detectors for low channel snr
+    # the three variables here are: SNR of max detector chan0, ratio of max chan0 to next-max, ratio of chan0 to chan1
+    # since CR should be 1) isolated to one detector, 2) soft primarily channel 0
+    crvars = (nsnr[0,j], nsnr[0,i], nsnr[1,j])
+
+    # create earthmask so that we can ignore occluded regions of the sky
+    occlimit = np.cos(67 * np.pi/180.) # 68 degrees occlusion limit on average
+    respxyz = pt2xyz((phi, theta))
+    earthmask = np.sum(respxyz.T * earthxyz, axis=1) <= occlimit # True if not occulted
+    nvisible = np.sum(earthmask)
+
+    # SC rotation matrices and skymap prior
+    (sc2celestial, celestial2sc) = gbm.sctransformations(poshist, met)
+    if skymap is not None:
+        respcelxyz = np.dot(sc2celestial, respxyz[:,earthmask])
+        respcelpt  = xyz2pt(respcelxyz)
+        # direct indexing is faster, but not significant cost to use interpolation here
+        skyprior = healpy.get_interp_val(skymap, respcelpt[1], respcelpt[0]) # note theta, phi arg order for healpy
+    else:
+        skyprior = np.ones(np.sum(earthmask)) / nsky
+    logskyprior = np.log(np.maximum(1e-100, skyprior)) # use really small number for nonzero val
+
+    # combine response table with masks
+    resp = combinedresp[:,earthmask,:] * fitmask[np.newaxis, np.newaxis, :]
+
+    # calculate likelihood ratio with scale-free amplitude prior and 2.5 sigma plateau
+    fg = np.hstack((nfg.ravel(), bfg.ravel()))
+    bg = np.hstack((nbg.ravel(), bbg.ravel()))
+    vb = np.hstack((nvfit.ravel(), bvfit.ravel()))
+    gc.collect() # save a little memory :(
+    # split up by spectrum to save a little memory :(
+    # (s, ll) = gbm.gbmlikelihood(fg, bg, resp, beta=1.0, gamma=2.5, sigref=sigref[:,earthmask])
+    s = np.zeros(resp.shape[:2])
+    ll = np.zeros(resp.shape[:2])
+    for i in range(len(sigref2)):
+        (s[i,:], ll[i,:]) = gbm.gbmlikelihood(fg, bg, resp[i,:,:], beta=1.0, gamma=2.5, sigref=sigref2[i], vb=vb)
+        itemp = np.argmax(ll[i,:])
+        # print "==== " + spectra[i] + "==== " + repr(itemp) + " / " + repr(nvisible)
+        # print (s[i, itemp], ll[i, itemp])
+        # print (phi[itemp], theta[itemp])
+
+    # multiply by sky location prior
+    llcoinc = ll + logskyprior[np.newaxis,:]
+
+    imax = np.argmax(ll) # max likelihood of flattened array
+    icoincmax = np.argmax(llcoinc)
+
+    # we have subtract np.log(nspec) to assume flat prior over spectra
+    # sky prior is already normalized to sum=1 so we don't need to factor that here
+    llmax = ll.ravel()[imax]
+    llmaxcoinc = llcoinc.ravel()[icoincmax]
+    llnorm = ll - llmax
+    llnormcoinc = llcoinc - llmaxcoinc
+    llmarg = llmax + np.log(np.exp(llnorm).sum()) - np.log(nspec*nsky)
+    llmargcoinc = llmaxcoinc + np.log(np.exp(llnormcoinc).sum()) - np.log(nspec)
+
+    # individual detector SNR 50-300 keV, and top 2 SNR measurements
+    naisnr = (nfg[3,:]-nbg[3,:])/np.sqrt(nbg[3,:])
+    idx    = np.argsort(naisnr)
+    snr0   = naisnr[idx[-1]]
+    snr1   = naisnr[idx[-2]]
+
+    # absolute max likelihood and optimal snr, chisq
+    specmax = int(imax / nvisible)
+    locmax = imax - nvisible*specmax
+    osnr = np.sum(resp[specmax,locmax]*(fg-bg)/bg)/np.sqrt(np.sum(resp[specmax,locmax]**2/bg))
+    error = fg-bg-resp[specmax,locmax]*s[specmax,locmax]
+    chisq = error**2/(bg+resp[specmax,locmax]*s[specmax,locmax])
+    # print event.ap(error)
+    # print event.ap(bg+resp[specmax,locmax]*s[specmax,locmax])
+    # print np.sum(.5 * (fg-bg)**2/bg)
+    # print event.ap(fg-bg)
+    # print event.ap(bg)
+    # print event.ap((fg-bg)/np.sqrt(bg))
+    # print event.ap(resp[specmax,locmax]*s[specmax,locmax])
+    # print event.ap(chisq)
+    chisqdof = np.sum(chisq)/len(chisq)
+    chiplusdof = np.sum(chisq[error>0])/np.sum(error>0)
+
+    # marginalized max likelihoods for spectra and sky location
+    locmarg = np.exp(llnorm).sum(axis=0)  # marginalize over spectra ignore offset
+    specmarg = np.exp(llnorm).sum(axis=1) # marginalize over sky location
+    ilocmarg = np.argmax(locmarg)
+    ispecmarg = np.argmax(specmarg)
+    (pmax, tmax) = (phi[earthmask][ilocmarg], theta[earthmask][ilocmarg])
+    xyzcel = np.dot(sc2celestial, pt2xyz((pmax, tmax)))
+    ptcel = xyz2pt(xyzcel)
+
+    # anngle to sun and earth positions from spectrum-marginalized best position
+    (sunp, sunt) = gbm.sunposition(met)
+    sunangle     = np.arccos(np.dot(xyzcel, pt2xyz((sunp, sunt))))   # cel coords
+    earthangle   = np.arccos(np.dot(earthxyz, pt2xyz((pmax, tmax)))) #  sc coords
+
+    # save event
+    events.append([met, dur, ingti, inrock, True, pmax, tmax, ptcel[0], ptcel[1], ispecmarg, \
+      s[specmax,locmax] / dur, osnr, snr0, snr1, chisqdof, chiplusdof, sunangle, earthangle, llmarg, llmargcoinc, \
+      crvars[0], crvars[1], crvars[2]])
+
+eventsarray = np.array(events)
+eventsarray[:,7:9] = normalizept(eventsarray[:,7:9].T).T
+elapsed = time.time() - clockstart
+print "\ntotal elapsed time: %.1fs [%.1f per on-source window]" % (elapsed, elapsed / len(sourcewindows))
+print "total number of win: %d" % len(sourcewindows)
+print "in GTI (not SAA):    %d" % np.sum(eventsarray[:,2])
+print "atmo resp available: %d" % np.sum(eventsarray[:,3])
+print "able to analyze:     %d" % np.sum(eventsarray[:,4])
+# if True:
+# if opt.odir is None:
+gbm.dump(eventsarray, threshold=min(5., max(eventsarray[:,18])))
+# else:
+if opt.odir is not None:
+    ofile = '%s/%s-%013.3f-%.3f-%.3f-%.3f.npy' % (opt.odir, opt.prefix, startmet, endmet-startmet, durations[0], durations[-1])
+    print "saving output table: %s" % (ofile)
+    try:
+        os.makedirs(opt.odir)
+    except:
+        None
+    np.save(ofile, eventsarray)
