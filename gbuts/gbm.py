@@ -169,7 +169,7 @@ def precachedata(met0, met1, dlist=dlist, poshist=True, fermidir=fermidir, fork=
     if fork is True: # fork process to build cache
         import subprocess, cPickle
         proc = subprocess.Popen(['python', '-c', \
-           "import nasaem.gbm; nasaem.gbm.precachedata(%f, %f, dlist=%s, poshist=%s, fermidir=%s, fork=False)" \
+           "import gbuts.gbm; gbuts.gbm.precachedata(%f, %f, dlist=%s, poshist=%s, fermidir=%s, fork=False)" \
            % (met0, met1, dlist, poshist, repr(fermidir))], stdout=subprocess.PIPE)
         cache = cPickle.load(proc.stdout)
     else: # load fits files to build cache
