@@ -1,0 +1,140 @@
+#!/usr/bin/env python
+#
+# Copyright (C) 2015  Leo Singer
+# Based on bayestar_localize_lvalert
+# https://ligo-vcs.phys.uwm.edu/cgit/lalsuite/tree/lalinference/python/bayestar_localize_lvalert.py
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
+# Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+#
+"""
+Listen for new events from LVAlert and perform sub-threshold searches.
+
+`gbmscan_lvalert` supports two modes of operation. You can explicitly
+specify the GraceDb ID on the command line, as in:
+
+    $ gbmscan_lvalert T90713
+
+Or, `gbmscan_lvalert` can accept an LVAlert packet read from stdin. This is
+handy for quickly setting up automatic processing of events in response to
+LVAlert notifications. To do this, first subscribe to events of types that you
+are interested in (probably `cbc_lowmass` or `test_lowmass`):
+
+    $ lvalert_admin --username albert.einstein --password supersecret --subscribe --node cbc_lowmass
+    $ lvalert_admin --username albert.einstein --password supersecret --subscribe --node test_lowmass
+    $ lvalert_admin --username albert.einstein --password supersecret --subscribe --node cbc_gstlal_mdc
+
+Create a configuration file that will tell `lvalert_listen` what to do in
+response to those event types. For example, you might create a file called
+`lvalert_listen.ini` with the following contents:
+
+    [test_lowmass]
+    executable = gbmscan_lvalert
+    [cbc_lowmass]
+    executable = gbmscan_lvalert
+    [cbc_gstlal_mdc]
+    executable = gbmscan_lvalert
+
+Finally, start `lvalert_listen`:
+
+    $ lvalert_listen  --username albert.einstein --password supersecret --config-file lvalert_listen.ini
+"""
+__author__ = "Leo Singer <leo.singer@ligo.org>"
+
+
+#
+# Command line interface
+#
+
+from optparse import Option, OptionParser
+from lalinference.bayestar import command
+import logging
+import sys
+import json
+
+logging.basicConfig(level=logging.DEBUG)
+log = logging.getLogger('GBUTS')
+
+parser = OptionParser(
+    formatter=command.NewlinePreservingHelpFormatter(),
+    description=__doc__,
+    usage="%prog [options] [GRACEID SKYMAP.fits[.gz]]"
+)
+opts, args = parser.parse_args()
+
+if len(args) == 0:
+    # No command line arguments; read LVAlert data from stdin
+    log.info('waiting for JSON input on stdin')
+    lvadata = json.load(sys.stdin)
+    log.info("received lvalert event of type='%s' for uid='%s' and file='%s'",
+        lvadata['alert_type'], lvadata['uid'], lvadata['file'])
+    if lvadata['alert_type'] == 'update' \
+            and 'sky_loc' in lvadata['object'].get('tag_names', []) \
+            and '.fits' in lvadata['file']:
+        graceid = lvadata['uid']
+        filename = lvadata['file']
+    else:
+        log.info('ignoring')
+        raise SystemExit
+elif len(args) == 1:
+    # One command line argument; manual start from GraceDB id
+    graceid, filename = args
+else:
+    # Too many command line arguments
+    parser.error("expected zero or two command line arguments")
+
+
+#
+# Hook logging into GraceDb
+#
+
+import ligo.gracedb.logging
+import ligo.gracedb.rest
+
+# Fire up a GraceDb client
+gracedb = ligo.gracedb.rest.GraceDb()
+
+# Uncomment to send log messages to GraceDb too
+# handler = ligo.gracedb.logging.GraceDbLogHandler(gracedb, graceid)
+# handler.setLevel(logging.INFO)
+# logging.root.addHandler(handler)
+
+
+try:
+    # Late imports
+    import tempfile
+    import shutil
+    import healpy as hp
+
+    # download sky map
+    log.info('Downloading sky map %s from event %s', filename, graceid)
+    remote_file = gracedb.files(graceid, filename)
+
+    # write sky map to temporary file, then read it
+    with tempfile.NamedTemporaryFile(suffix=filename) as local_file:
+        shutil.copyfileobj(remote_file, local_file)
+        local_file.flush()
+        prob, header = hp.read_map(local_file.name, h=True, verbose=False)
+    header = dict(header)
+
+    #
+    # FIXME: Work goes here
+    #
+
+    print(header)
+except:
+    # Produce log message for any otherwise uncaught exception
+    log.exception("gbmscan failed")
+    # Then re-raise the exception
+    raise

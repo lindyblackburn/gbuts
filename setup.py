@@ -7,4 +7,5 @@ setup(
     description='Gamma-ray Burst Targeted Search',
     author='Lindy Blackburn',
     packages=['gbuts'],
-    scripts=['bin/gbmscan'])
+    scripts=['bin/gbmscan', 'bin/gbmscan_lvalert'],
+    requires=['ligo_gracedb'])
