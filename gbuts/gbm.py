@@ -422,7 +422,7 @@ def gbmfit(data, t, duration, dlist=dlist, channels=[0,1,2,3,4,5,6,7], poiss=Fal
             # using numpy 1.7 polyfit, weights according to poisson error (1+sqrt(N)) accounting for duration since fit it on rate(t)
             # (par, cov) = fit.polyfit(tfit[ifit], cfit[ifit]/dfit[ifit], degree, cov=True, w=dfit[ifit]/(1.+np.sqrt(cfit[ifit])))
             # we DO NOT do the weights estimates above because it FAILS for low-N outliers (bad approximation)
-            (par, cov) = np.polyfit(tfit[ifit], cfit[ifit]/dfit[ifit], degree, cov=True)
+            (par, cov) = fit.polyfit(tfit[ifit], cfit[ifit]/dfit[ifit], degree, cov=True)
             # if poiss: # poisson max-likelihood refinement to polyfit par
             #     import scipy.optimize
             #     par = scipy.optimize.fmin(fit.negloglikelihood, par, args=(np.polyval, tcent[bgidx], counts[bgidx,j], tdur[bgidx]), disp=False)
@@ -437,7 +437,7 @@ def gbmfit(data, t, duration, dlist=dlist, channels=[0,1,2,3,4,5,6,7], poiss=Fal
                 jfit = ifit[np.abs(tfit[ifit]) <= (fitsize/2.)*max(0.512, duration)]
                 if len(jfit) > degree+1: # require smaller interval to have degree+2 points
                     ifit = jfit
-                    (par, cov) = np.polyfit(tfit[ifit], cfit[ifit]/dfit[ifit], degree, cov=True)
+                    (par, cov) = fit.polyfit(tfit[ifit], cfit[ifit]/dfit[ifit], degree, cov=True)
                     # if poiss:
                     #     par = scipy.optimize.fmin(fit.negloglikelihood, par, args=(np.polyval, tcent[bgidx], counts[bgidx,j], tdur[bgidx]), disp=False)
                     #     cov = 0
