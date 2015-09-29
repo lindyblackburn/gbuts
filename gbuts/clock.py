@@ -48,7 +48,6 @@ fmtlist = """
 %d-%b-%Y
 %d-%b-%Y %H:%M:%S
 %j-%Y
-%j
 """.strip().split('\n')
 
 # convert string to time tuple by trying different format templates until one is found
