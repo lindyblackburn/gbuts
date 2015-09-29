@@ -698,8 +698,10 @@ def sunposition(t0, j2000ref=utc2fermi(j2000ref), verbose=False):
 def downselect(events, overlapfactor=0.2, threshold=None):
     if threshold:
         events = events[events[:,18] >= threshold]
-    sortedevents = events[(-events[:,18]).argsort(), :]
+    sortedevents = []
     uniqueevents = []
+    if len(events) > 0: 
+        sortedevents = events[(-events[:,18]).argsort(), :]
     for e1 in sortedevents:
         keep = True
         for e2 in uniqueevents:
