@@ -717,7 +717,7 @@ def downselect(events, overlapfactor=0.2, threshold=None):
 # pretty print events >= threshold, optional downselection and sort by strength
 # xref is subtracted from MET time in events before printed, e.g. to show GPS
 # out can be an open filehandle, or STDOUT by default
-def dump(events, sorted=True, downselect=False, threshold=None, xref=0, out=None):
+def dump(events, sorted=True, downsel=False, threshold=None, xref=0, out=None):
     if out is None:
         import sys
         out = sys.stdout
@@ -735,7 +735,7 @@ def dump(events, sorted=True, downselect=False, threshold=None, xref=0, out=None
     out.write("------------------------------------------------------------------------------------------------------------------------------------------------\n")
     if threshold:
         events = events[events[:,18] >= threshold]
-    if downselect:
+    if downsel:
         events = downselect(events)
     elif sorted and (len(events) > 0): # no need to sort again if downselect is called
         events = events[(-events[:,18]).argsort(), :]
