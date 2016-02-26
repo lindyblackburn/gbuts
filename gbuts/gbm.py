@@ -734,9 +734,9 @@ def dump(events, sorted=True, downsel=False, threshold=None, xref=0, out=None):
     if len(events) == 0:
         return
     #                0          1      2    3    4    5     6     7   8    9    10    11    12    13   14     15   16    17      18      19     20    21    22
-    out.write("------------------------------------------------------------------------------------------------------------------------------------------------\n")
-    out.write("    tcent    duration  gti rock good  phi  theta (p,t)cele spec ampli  snr  snr0  snr1 chisq chisq+ sun  earth   logLR  coincLR  CR0   CR1   CR2\n")
-    out.write("------------------------------------------------------------------------------------------------------------------------------------------------\n")
+    out.write("--------------------------------------------------------------------------------------------------------------------------------------------------\n")
+    out.write("    tcent    duration  gti rock good  phi  theta (p,t)cele spec ampli  snr  snr0  snr1 chisq chisq+ sun  earth    logLR   coincLR  CR0   CR1   CR2\n")
+    out.write("--------------------------------------------------------------------------------------------------------------------------------------------------\n")
     if threshold:
         events = events[events[:,18] >= threshold]
     if downsel:
@@ -746,7 +746,7 @@ def dump(events, sorted=True, downsel=False, threshold=None, xref=0, out=None):
     for e in events:
         e = list(e)
         e[0] -= xref
-        out.write("%13.3f %7.3f %3d %4d %4d  %5.3f %5.3f %5.3f %5.3f %1d %5.2f %5.1f %5.1f %5.1f %5.1f %5.1f %5.3f %5.3f %7.1f %7.1f %5.1f %5.1f %5.1f\n" % tuple(e))
+        out.write("%13.3f %7.3f %3d %4d %4d  %5.3f %5.3f %5.3f %5.3f %1d %5.2f %5.1f %5.1f %5.1f %5.1f %5.1f %5.3f %5.3f %8.2f %8.2f %5.1f %5.1f %5.1f\n" % tuple(e))
 
 # load in ASCII file dump of events into array
 def loaddump(dumpfile):
