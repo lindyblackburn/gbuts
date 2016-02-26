@@ -44,6 +44,7 @@ fmtlist = """
 %m-%d-%Y %H:%M:%S
 %m/%d/%Y %H:%M:%S
 %m/%d/%Y
+%Y-%m-%dT%H:%M:%S.%f
 %Y%m%dT%H%M%S
 %d-%b-%Y
 %d-%b-%Y %H:%M:%S
