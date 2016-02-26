@@ -746,7 +746,7 @@ def dump(events, sorted=True, downsel=False, threshold=None, xref=0, out=None):
     for e in events:
         e = list(e)
         e[0] -= xref
-        out.write("%13.3f %7.3f %3d %4d %4d  %5.3f %5.3f %5.3f %5.3f %1d %5.1f %5.1f %5.1f %5.1f %5.1f %5.1f %5.3f %5.3f %7.1f %7.1f %5.1f %5.1f %5.1f\n" % tuple(e))
+        out.write("%13.3f %7.3f %3d %4d %4d  %5.3f %5.3f %5.3f %5.3f %1d %5.2f %5.1f %5.1f %5.1f %5.1f %5.1f %5.3f %5.3f %7.1f %7.1f %5.1f %5.1f %5.1f\n" % tuple(e))
 
 # load in ASCII file dump of events into array
 def loaddump(dumpfile):
