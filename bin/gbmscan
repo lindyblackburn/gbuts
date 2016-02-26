@@ -89,6 +89,12 @@ log2mindur = np.round(np.log2(opt.mindur))
 durations = 1.024 * 2.**np.arange(log2mindur, log2maxdur+1, 1)
 maxdur = max(0.512, durations[-1])
 
+if opt.odir is not None:
+    ofile = '%s/%s-%013.3f-%.3f-%.3f-%.3f.npy' % (opt.odir, opt.prefix, startmet, endmet-startmet, durations[0], durations[-1])
+    if os.path.exists(ofile):
+        print "output file already exists: %s" % ofile
+        sys.exit()
+
 # build up list of source windows to search [tcent, duration], avoid steps shorter than minstep
 sourcewindows = sorted(((t, dur) for dur in durations for t in np.arange(startmet, endmet, max(opt.minstep, dur/4.))))
 
@@ -374,7 +380,7 @@ print "able to analyze:     %d" % np.sum(eventsarray[:,4])
 gbm.dump(eventsarray, threshold=min(5., max(eventsarray[:,18])))
 # else:
 if opt.odir is not None:
-    ofile = '%s/%s-%013.3f-%.3f-%.3f-%.3f.npy' % (opt.odir, opt.prefix, startmet, endmet-startmet, durations[0], durations[-1])
+    # ofile = '%s/%s-%013.3f-%.3f-%.3f-%.3f.npy' % (opt.odir, opt.prefix, startmet, endmet-startmet, durations[0], durations[-1])
     print "saving output table: %s" % (ofile)
     try:
         os.makedirs(opt.odir)
