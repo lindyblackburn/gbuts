@@ -695,18 +695,20 @@ def sunposition(t0, j2000ref=utc2fermi(j2000ref), verbose=False):
 # keep loudest unique events in array
 # events = np.array([[tcent, duration, ..., likelihood], ...])
 # overlapfactor: delete weaker event if stronger event explains overlapfactor of the SNR
-def downselect(events, overlapfactor=0.2, threshold=None):
+# combinespec: combine all spectra
+# fixedwin: fixed coincidence window slob
+def downselect(events, overlapfactor=0.2, threshold=None, combinespec=True, fixedwin=0.):
     if threshold:
         events = events[events[:,18] >= threshold]
     sortedevents = []
     uniqueevents = []
-    if len(events) > 0: 
+    if len(events) > 0:
         sortedevents = events[(-events[:,18]).argsort(), :]
     for e1 in sortedevents:
         keep = True
         for e2 in uniqueevents:
-            toverlap = min(e1[0] + e1[1]/2., e2[0] + e2[1]/2.) - max(e1[0] - e1[1]/2., e2[0] - e2[1]/2.)
-            if toverlap > 0:
+            toverlap = min(e1[0] + e1[1]/2., e2[0] + e2[1]/2.) - max(e1[0] - e1[1]/2., e2[0] - e2[1]/2.) + fixedwin
+            if (combinespec or (e2[9] == e1[9])) and (toverlap > 0):
                 amplitude = e1[11] / np.sqrt(e1[1])
                 snrexpected = amplitude * toverlap / np.sqrt(e2[1])
                 if e2[11] * overlapfactor < snrexpected:
