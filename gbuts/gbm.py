@@ -568,8 +568,8 @@ def gbmlikelihood(fg, bg, response=None, nnewton=3, beta=1.0, gamma=2.5, sigref=
         vr = vr.reshape(r.shape)
     if type(sigref) == np.ndarray:
         sigref = sigref.ravel()
-    # paper forumula uses (1+erf) for simplicity because reference ll does not matter yet
-    lref = beta * np.log(gamma) + (1-beta) * np.log(sigref)
+    # paper formula uses (1+erf) for simplicity because reference ll does not matter yet
+    lref = -beta * np.log(gamma) + (1-beta) * np.log(sigref)
 
     # constant vf chi-sq solution initial guess for source amplitude
     vf = np.maximum(b, f) + vb # total variance of foreground counts
