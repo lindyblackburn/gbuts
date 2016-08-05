@@ -20,7 +20,7 @@ def toc(prefix=""):
 
 # wget http://maia.usno.navy.mil/ser7/tai-utc.dat
 # leapdates = [datetime.datetime.strptime(line[:12], " %Y %b %d") for line in open(os.getenv("HOME") + '/bin/tai-utc.dat') if float(line[1:5]) >= 1970]
-leapdates  = [datetime.datetime.strptime(a, "%m/%d/%y") for a in "7/1/81 7/1/82 7/1/83 7/1/85 1/1/88 1/1/90 1/1/91 7/1/92 7/1/93 7/1/94 1/1/96 7/1/97 1/1/99 1/1/06 1/1/09 7/1/12 7/1/15".split()]
+leapdates  = [datetime.datetime.strptime(a, "%m/%d/%y") for a in "7/1/81 7/1/82 7/1/83 7/1/85 1/1/88 1/1/90 1/1/91 7/1/92 7/1/93 7/1/94 1/1/96 7/1/97 1/1/99 1/1/06 1/1/09 7/1/12 7/1/15 1/1/17".split()]
 
 # formatting for parsing time strings
 fmtlist = """
