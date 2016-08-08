@@ -130,7 +130,7 @@ def gps2mjd(gps):
 
 # convert MJD to UTC using XTE reference time. assume MJD is aligned to UTC (for leap sec)
 def mjd2utc(mjd):
-    return xteref + datetime.timedelta(days=mjd-50155.)
+    return xteref + datetime.timedelta(days=mjd-50115.)
 
 # convert MJD to RXTE week
 def mjd2week(mjd):
